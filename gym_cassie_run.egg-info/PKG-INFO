@@ -1,0 +1,12 @@
+Metadata-Version: 2.1
+Name: gym-cassie-run
+Version: 0.1.0
+Summary: gym RL environment in which a mujoco simulation of Agility Robotics' Cassie robot is rewarded for walking forward
+Home-page: https://github.com/perrin-isir/gym-cassie-run
+Author: Nicolas Perrin-Gilbert
+License: LICENSE
+Platform: UNKNOWN
+License-File: LICENSE
+
+UNKNOWN
+
