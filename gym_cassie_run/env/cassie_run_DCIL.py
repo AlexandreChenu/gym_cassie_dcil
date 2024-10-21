@@ -1,67 +1,31 @@
-
-# Copyright (c) 2020 Uber Technologies, Inc.
-
-# Licensed under the Uber Non-Commercial License (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at the root directory of this project.
-
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 import sys
 import os
 sys.path.append(os.getcwd())
 
-from abc import ABC
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from typing import Optional
 
-# from humanoidenv import HumanoidEnv
-from .cassie_run import CassieRunEnv
-
-from typing import Union
-from gym import utils, spaces
-from gym import error
 import numpy as np
-import torch
-from matplotlib import collections as mc
+from os import path
 
-from collections import defaultdict, namedtuple
+from .cassie_run import *
 
-import copy
-# from IPython import embed
+import gymnasium as gym
 
-# from .skill_manager_fetchenv import SkillsManager
-# from skill_manager_fetchenv import SkillsManager
+from gymnasium import utils, spaces, error
+from gymnasium.envs.mujoco import MujocoEnv
+from gymnasium.spaces import Box
 
-import gym
-gym._gym_disable_underscore_compat = True
+DEFAULT_CAMERA_CONFIG = {
+	"distance": 4.0,
+}
 
-import types
-os.environ["PATH"] = os.environ["PATH"].replace('/usr/local/nvidia/bin', '')
-# try:
-import mujoco_py
-
-from gym.envs.mujoco import mujoco_env
-# except Exception:
-	# print('WARNING: could not import mujoco_py. This means robotics environments will not work')
-import gym.spaces
-from scipy.spatial.transform import Rotation
-from collections import defaultdict, namedtuple
-import os
-from gym.envs.mujoco import mujoco_env
-
-
-if torch.cuda.is_available():
-  device = torch.device("cuda")
-else:
-  device = torch.device("cpu")
 
 
 class GoalEnv(gym.Env):
 	"""The GoalEnv class that was migrated from gym (v0.22) to gym-robotics"""
 
-	def reset(self, options=None, seed: Optional[int] = None, infos=None):
+	def reset(self, options=None, seed: Optional[int] = None):
 		super().reset(seed=seed)
 		# Enforce that each GoalEnv uses a Goal-compatible observation space.
 		if not isinstance(self.observation_space, gym.spaces.Dict):
@@ -72,7 +36,6 @@ class GoalEnv(gym.Env):
 			if key not in self.observation_space.spaces:
 				raise error.Error('GoalEnv requires the "{}" key.'.format(key))
 
-	@abstractmethod
 	def compute_reward(self, achieved_goal, desired_goal, info):
 		"""Compute the step reward.
 		Args:
@@ -89,275 +52,217 @@ class GoalEnv(gym.Env):
 		raise NotImplementedError
 
 
-@torch.no_grad()
 def goal_distance(goal_a, goal_b):
-	# assert goal_a.shape == goal_b.shape
-	#print("\ngoal_a = ", goal_a)
-	#print("goal_b = ", goal_b)
-	#print("d = ", np.linalg.norm(goal_a - goal_b, axis=-1))
-	if torch.is_tensor(goal_a):
-		return torch.linalg.norm(goal_a - goal_b, axis=-1)
-	else:
-		return np.linalg.norm(goal_a - goal_b, axis=-1)
+	# assert goal_a.shape[1] == 2
+	# assert goal_b.shape[1] == 2
+	#print("goal_a.shape = ", goal_a.shape)
+	#print("goal_b.shape = ", goal_b.shape)
+
+	return np.linalg.norm(goal_a[:] - goal_b[:], axis=-1)
 
 
-@torch.no_grad()
 def default_compute_reward(
-		achieved_goal: Union[np.ndarray, torch.Tensor],
-		desired_goal: Union[np.ndarray, torch.Tensor],
-		info: dict
-):
-	distance_threshold = 0.075
+		achieved_goal: np.ndarray,
+		desired_goal: np.ndarray):
+	
+	distance_threshold = 0.1
 	reward_type = "sparse"
 	d = goal_distance(achieved_goal, desired_goal)
 	if reward_type == "sparse":
-		# if torch.is_tensor(achieved_goal):
-		#     return (d < distance_threshold).double()
-		# else:
 		return 1.0 * (d <= distance_threshold)
 	else:
 		return -d
 
-## interface vers Humanoid
-class GCassie(mujoco_env.MujocoEnv, utils.EzPickle, ABC):
-	TARGET_SHAPE = 0
-	MAX_PIX_VALUE = 0
-
-	def __init__(self):
-
-		self.env = CassieRunEnv(
-		)
-
-		self.action_space = self.env.action_space
-
-		self.observation_space = self.env.observation_space
-
-		self.set_reward_function(default_compute_reward)
-
-		init_state = self.env.reset()
-		self.init_state = init_state.copy()
-
-		self.init_sim_state = self.env.get_inner_state()
-		self.init_qpos = self.init_sim_state[0].copy()
-		self.init_qvel = self.init_sim_state[1].copy()
-
-		self.render_cache = defaultdict(dict)
-
-		self.state = self.init_state.copy()
-		self.done = False
-		self.steps = 0
-
-		self.max_episode_steps = 100
-
-		self.rooms = []
-
-		# self.viewer = mujoco_py.MjViewer(self.env.sim)
-
-	def __getattr__(self, e):
-		assert self.env is not self
-		return getattr(self.env, e)
-
-	def set_reward_function(self, reward_function):
-		self.compute_reward = (
-			reward_function  # the reward function is not defined by the environment
-		)
-
-
-	def reset_model(self, env_indices=None) -> np.ndarray:
-		"""
-		Reset environments to initial simulation state & return vector state
-		"""
-		self.env.set_inner_state(self.init_sim_state)
-
-		return self.state_vector()
-
-	def reset(self, options=None, seed: Optional[int] = None, infos=None):
-		self.reset_model()
-		self.steps = 0
-		return self.state_vector()
-
-	def reset_done(self, options=None, seed: Optional[int] = None, infos=None):
-		self.reset_model()
-		self.steps = 0
-		return self.state_vector()
-
-	def step(self, action):
-		self.steps += 1
-		cur_state = self.state.copy()
-
-		new_state, env_reward, done, _, info =  self.env.step(action)
-		# print("step : ", self.project_to_goal_space(new_state))
-		self.state = new_state
-		reward = self.compute_reward(self.project_to_goal_space(new_state), self.goal, {})
-
-		truncation = (self.steps >= self.max_episode_steps)
-
-		is_success = reward.copy().reshape(1,)
-		self.is_success = is_success.copy()
-
-		truncation = truncation * (1 - is_success).reshape(1,)
-		info = {'is_success': is_success,
-				'done_from_env': np.array(done,dtype=np.intc).reshape(1,),
-				'reward_from_env': env_reward,
-				'truncation': truncation}
-		self.done = (done or bool(truncation)) or bool(is_success)
-		return self.state_vector(), reward, self.done, info
-
-
-	def state_vector(self):
-		return self.env._get_obs().copy()
-
-	def render(self):
-		return self.env.render()
-
-
-	def set_state(self, sim_state, set_state):
-		if set_state:
-			self.env.set_inner_state(sim_state)
-			self.state = self.env._get_obs().copy()
-
-	def get_state(self):
-		state = (self.state.copy(), self.env.get_inner_state())
-		return state
-
-	def get_observation(self):
-		return self.state.copy()
-
-	def set_goal(self, goal, set_goal):
-		if set_goal:
-			self.goal = goal.copy()
-
-	def get_goal(self):
-		return self.goal.copy()
-
-	def set_max_episode_steps(self, max_episode_steps, set_steps):
-		if set_steps:
-			self.max_episode_steps = max_episode_steps
-			self.steps = 0
-
-	def get_max_episode_steps(self):
-		return self.max_episode_steps
-
-	def get_obs_dim(self):
-		return self.get_state()[0].shape[0]
-
-	@torch.no_grad()
-	def project_to_goal_space(self, state):
-		com_pos = self.get_com_pos(state)
-
-		return com_pos
-
-	def get_com_pos(self, state):
-		"""
-		get center of mass position from full state for torso?
-		"""
-		# print("len(list(state)) = ", len(list(state)))
-		# assert len(list(state))== 378
-
-		com_pos = state[:3]
-		# gripper_pos = state[102:105]
-
-		return com_pos
-
-
-@torch.no_grad()
-def goal_distance(goal_a, goal_b):
-	# assert goal_a.shape == goal_b.shape
-	#print("\ngoal_a = ", goal_a)
-	#print("goal_b = ", goal_b)
-	#print("d = ", np.linalg.norm(goal_a - goal_b, axis=-1))
-	if torch.is_tensor(goal_a):
-		return torch.linalg.norm(goal_a - goal_b, axis=-1)
-	else:
-		return np.linalg.norm(goal_a - goal_b, axis=-1)
-
-
-@torch.no_grad()
-def default_compute_reward(
-		achieved_goal: Union[np.ndarray, torch.Tensor],
-		desired_goal: Union[np.ndarray, torch.Tensor],
-		info: dict
-):
-	distance_threshold = 0.05
-	reward_type = "sparse"
+def default_success_function(achieved_goal, desired_goal):
+	distance_threshold = 0.1
 	d = goal_distance(achieved_goal, desired_goal)
-	if reward_type == "sparse":
-		# if torch.is_tensor(achieved_goal):
-		#     return (d < distance_threshold).double()
-		# else:
-		return 1.0 * (d <= distance_threshold)
-	else:
-		return -d
+	return 1.0 * (d <= distance_threshold)
 
-class GCassieGoal(GCassie, GoalEnv, utils.EzPickle, ABC):
-	def __init__(self):
-		super().__init__()
 
-		self.reset_model()
-		self._goal_dim = self.project_to_goal_space(self.state).shape[0] ## TODO: set automatically
-		high_goal = np.ones(self._goal_dim)
-		low_goal = -high_goal
 
+class GCassieRunEnv(CassieRunEnv, GoalEnv, utils.EzPickle, ABC):
+	def __init__(self, **kwargs):
+		super().__init__(**kwargs)
+		
+		self._obs_dim = (67,)
+		
+		self.max_episode_steps = 1000
+
+		high = np.ones(self._obs_dim)
+		low = -high
+		self._achieved_goal_dim = 3
+		self._desired_goal_dim = 3
+		high_achieved_goal = np.ones(self._achieved_goal_dim)
+		low_achieved_goal = -high_achieved_goal
+		high_desired_goal = np.ones(self._desired_goal_dim)
+		low_desired_goal = -high_desired_goal
 		self.observation_space = spaces.Dict(
 			dict(
-				observation=self.env.observation_space,
+				observation=spaces.Box(low, high, dtype=np.float64),
 				achieved_goal=spaces.Box(
-					low_goal, high_goal, dtype=np.float64
+					low_achieved_goal, high_achieved_goal, dtype=np.float64
 				),
 				desired_goal=spaces.Box(
-					low_goal, high_goal, dtype=np.float64
+					low_desired_goal, high_desired_goal, dtype=np.float64
 				),
 			)
 		)
-
+				
 		self.goal = None
 
 		self.compute_reward = None
 		self.set_reward_function(default_compute_reward)
 
 		self._is_success = None
+
+		# print("self.max_episode_steps.shape = ", self.max_episode_steps.shape)
 		# self.set_success_function(default_success_function)
 
+	def project_to_goal_space(self, state):
+		return state[:3]
+
 	def get_obs_dim(self):
-		return self.get_state()[0].shape[0]
-
-
+		return self._obs_dim
+	def get_full_state_dim(self):
+		return self._obs_dim
 	def get_goal_dim(self):
-		return self._goal_dim
+		return self._achieved_goal_dim
 
-	@torch.no_grad()
 	def goal_distance(self, goal_a, goal_b):
 		# assert goal_a.shape == goal_b.shape
-		if torch.is_tensor(goal_a):
-			return torch.linalg.norm(goal_a - goal_b, axis=-1)
-		else:
-			return np.linalg.norm(goal_a - goal_b, axis=-1)
+		return np.linalg.norm(goal_a[:] - goal_b[:], axis=-1)
+
+	def set_reward_function(self, reward_function):
+		self.compute_reward = (  # the name is compute_reward in GoalEnv environments
+			reward_function
+		)
 
 
-	@torch.no_grad()
+	def reset(self, *, options=None, seed: Optional[int] = None):
+		self.reset_model()
+		self.goal = self._sample_goal()  # sample goal
+		self.steps = 0
+		self._elapsed_steps = 0
+		self.state = self._get_obs()
+
+		info = {}
+
+		return {
+			'observation': self.state.copy(),
+			'achieved_goal': self.project_to_goal_space(self.state),
+			'desired_goal': self.goal.copy(),
+		}, info
+
+	# TODO adapt to vec env
+	def reset_done(self, done, *, options=None, seed: Optional[int] = None):
+		if done : 
+			self.steps = 0
+			self._elapsed_steps = 0
+			newgoal = self._sample_goal()
+			self.goal = newgoal.copy()
+		return {
+			'observation': self.state.copy(),
+			'achieved_goal': self.project_to_goal_space(self.state),
+			'desired_goal': self.goal.copy(),
+		}, {}
+
+	def set_state_(self, state, new_state_bool=1):
+		state = state.flatten()
+		if new_state_bool:
+			new_qpos = state[:self.init_qpos.shape[0]]
+			new_qvel = state[self.init_qpos.shape[0]:]
+			self.set_state(new_qpos, new_qvel)
+
+			self.state = self._get_obs()
+		return self.get_state()
+
+	def get_state(self):
+		return self._get_obs()
+
+	def get_observation(self):
+		return {
+			'observation': self.state.copy(),
+			'achieved_goal': self.project_to_goal_space(self.state),
+			'desired_goal': self.goal.copy(),
+		}
+
+	def set_goal(self, goal, new_goal_bool):
+		if new_goal_bool:
+			self.goal = goal.copy().reshape(-1,)
+
+	def get_goal(self,):
+		return self.goal
+
+	def set_max_episode_steps(self, max_episode_steps, new_max_episode_steps_bool):
+		if new_max_episode_steps_bool:
+			self.max_episode_steps = max_episode_steps
+
+
+	def _sample_goal(self):
+		return self.project_to_goal_space(np.random.rand(3) * 100 )
+	
 	def step(self, action):
+		action = action.flatten()
+		x_position_before = (
+			2.0 * self.data.qpos[0]
+			+ self.data.body("left-foot").xpos[0]
+			+ self.data.body("right-foot").xpos[0]
+		)
+		true_action = (action + 1.0) / 2.0 * (
+			self._action_upper_bounds - self._action_lower_bounds
+		) + self._action_lower_bounds
+		self.do_simulation(true_action, self.frame_skip)
+
 		self.steps += 1
-		cur_state = self.state.copy()
 
-		new_state, env_reward, done, _, info =  self.env.step(action)
-		# print("step : ", self.project_to_goal_space(new_state))
-		self.state = new_state
-		reward = self.compute_reward(self.project_to_goal_space(new_state), self.goal, {})
+		x_position_after = (
+			2.0 * self.data.qpos[0]
+			+ self.data.body("left-foot").xpos[0]
+			+ self.data.body("right-foot").xpos[0]
+		)
+		x_velocity = 2.0 * (x_position_after - x_position_before) / self.dt
+		z_position_after = self.data.qpos[2]
 
-		truncation = (self.steps >= self.max_episode_steps)
+		ctrl_cost = self.control_cost(true_action)
 
-		is_success = reward.copy().reshape(1,)
-		self.is_success = is_success.copy()
+		forward_reward = (
+			self._forward_reward_weight * x_velocity
+			- np.abs(self.data.qpos[1]) * 10.0
+			- self.quat_distance(
+				self.init_foot_quat, self.data.body("right-foot").xquat
+			)
+			* 5
+			- self.quat_distance(self.init_foot_quat, self.data.body("left-foot").xquat)
+			* 5
+		)
+		self.state = self._get_obs()
+		terminated = False
 
-		truncation = truncation * (1 - is_success).reshape(1,)
-		info = {'is_success': is_success,
-				'done_from_env': np.array(done,dtype=np.intc).reshape(1,),
-				'reward_from_env': env_reward,
-				'truncation': truncation}
-		self.done = (done or bool(truncation)) or bool(is_success)
+		reward = self.compute_reward(self.project_to_goal_space(self.state), self.goal)
+		reward = np.array(reward).reshape(1,)
 
-		# print("observation env = ", self.state[:15])
+		is_success = reward.copy()
 
+		done = np.zeros(is_success.shape)
+		terminated = done.copy()
+
+		truncation = np.array((self.steps >= self.max_episode_steps)).astype(int).reshape(1,)
+
+		info = {
+			"x_position": x_position_after,
+			"x_velocity": x_velocity,
+			"reward_run": forward_reward,
+			"reward_ctrl": -ctrl_cost,
+			'is_success': is_success,
+			'done_from_env': done,
+			'truncation': truncation,
+		}
+
+		self.done = np.maximum(truncation, is_success)
+
+		if self.render_mode == "human":
+			self.render()
+			
 		return (
 			{
 				'observation': self.state.copy(),
@@ -365,115 +270,23 @@ class GCassieGoal(GCassie, GoalEnv, utils.EzPickle, ABC):
 				'desired_goal': self.goal.copy(),
 			},
 			reward,
-			self.done,
+			terminated, 
+			truncation, 
 			info,
 		)
 
-	@torch.no_grad()
-	def _sample_goal(self):
-		# return (torch.rand(self.num_envs, 2) * 2. - 1).to(self.device)
-		return np.random.uniform(-1.,1., size=self._goal_dim)
-
-	@torch.no_grad()
-	def reset(self, options=None, seed: Optional[int] = None, infos=None):
-		self.reset_model()  # reset state to initial value
-		self.goal = self._sample_goal()  # sample goal
-		self.steps = 0
-		self.state = self.state_vector()
-		return {
-			'observation': self.state.copy(),
-			'achieved_goal': self.project_to_goal_space(self.state),
-			'desired_goal': self.goal.copy(),
-		}
-
-	def reset_done(self, options=None, seed: Optional[int] = None, infos=None):
-
-		# self.reset_model() ## do not force reset model if overshoot used
-		self.goal = self._sample_goal()
-		self.steps = 0.
-		self.state = self.state_vector()
-
-		return {
-			'observation': self.state.copy(),
-			'achieved_goal': self.project_to_goal_space(self.state),
-			'desired_goal': self.goal.copy(),
-		}
-
-	@torch.no_grad()
-	def project_to_goal_space(self, state):
-		com_pos = self.get_com_pos(state)
-
-		return com_pos
-
-	def get_com_pos(self, state):
-		"""
-		get center of mass position from full state for torso?
-		"""
-		# print("len(list(state)) = ", len(list(state)))
-		# assert len(list(state))== 378
-
-		com_pos = state[:3]
-		# gripper_pos = state[102:105]
-
-		return com_pos
-
-	def set_state(self, sim_state, set_state):
-		if set_state:
-			self.env.set_inner_state(sim_state)
-			self.state = self.env._get_obs().copy()
-
-	def get_state(self):
-		state = (self.env._get_obs().copy(), self.env.get_inner_state())
-		return state
-
-	def get_observation(self):
-		return {
-			'observation': self.env._get_obs().copy(),
-			'achieved_goal': self.project_to_goal_space(self.state),
-			'desired_goal': self.goal.copy(),
-		}
-
-	def set_goal(self, goal, set_goal):
-		if set_goal:
-			self.goal = goal.copy()
-
-	def get_goal(self):
-		return self.goal.copy()
-
-	def set_max_episode_steps(self, max_episode_steps, set_steps):
-		if set_steps:
-			self.max_episode_steps = max_episode_steps
-			self.steps = 0
-
-	def get_max_episode_steps(self):
-		return self.max_episode_steps
-
-
 if (__name__=='__main__'):
 
-	env = GCassieGoal()
+	env = GCassieRunEnv(render_mode = "human")
 
-	obs = env.reset()
-	print("obs = ", obs)
+	obs, info = env.reset()
+	# print("obs = ", obs)
 
-	for i in range(100):
-		env.env.render()
+	for i in range(200):
+		
 		action = env.action_space.sample()
-		print("sim_state = ", env.sim.get_state())
-		obs, reward, done, info = env.step(action)
+		# print("sim_state = ", env.sim.get_state())
+		env.step(action)
 
-	obs = env.reset()
-	print("obs = ", obs)
+		env.render()
 
-	for i in range(100):
-		env.env.render()
-		action = env.action_space.sample()
-		print("sim_state = ", env.sim.get_state())
-		obs, reward, done, info = env.step(action)
-
-		# if done:
-			# env.reset_done()
-
-	print("obs = ", obs)
-	print("done = ", done)
-	print("info = ", info)
