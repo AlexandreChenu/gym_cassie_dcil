@@ -115,6 +115,8 @@ class GCassieRunEnv(CassieRunEnv, GoalEnv, utils.EzPickle, ABC):
 
 		self._is_success = None
 
+		self.distance_threshold = 0.075
+
 		# print("self.max_episode_steps.shape = ", self.max_episode_steps.shape)
 		# self.set_success_function(default_success_function)
 
